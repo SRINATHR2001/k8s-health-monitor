@@ -1,0 +1,53 @@
+# =====================================================================
+# K8s Health Monitor — Cluster Configuration
+# =====================================================================
+# Each cluster points at its own kubeconfig file. The dashboard treats
+# every cluster the same way: it loads the kubeconfig and lets the file's
+# auth machinery (embedded token, exec plugin, etc.) handle credentials.
+#
+# Sanity-check each file with:
+#   KUBECONFIG=<path> kubectl get nodes
+# If that works, the dashboard will too.
+# =====================================================================
+
+refresh_interval_seconds: 30
+
+clusters:
+
+  # - name: staging-
+  #   kubeconfig_path: ~/.kube/prod.yaml
+  #   provider: aws
+  #   profile: prod
+  #   region: us-east-1
+
+  # - name: staging-us-west-2
+  #   kubeconfig_path: ~/.kube/staging.yaml
+  #   provider: aws
+  #   profile: staging
+  #   region: us-west-2
+
+  # - name: dev-eu-west-1
+  #   kubeconfig_path: ~/.kube/dev.yaml
+  #   provider: aws
+  #   profile: dev
+  #   region: eu-west-1
+
+
+  # - name: secure-prod
+  #   kubeconfig_path: ~/.kube/secure.yaml
+  #   provider: aws
+  #   profile: secure
+  #   region: us-east-1
+  #   auth:
+  #     type: interactive
+  #     ttl_seconds: 3600
+  #     reauth_warn_seconds: 300
+  #     login_command: "aws sso login --profile secure"
+  #     login_hint: "Run the command, complete the TOTP prompt, then click 'I've re-authenticated'."
+
+
+  - name: do-cluster
+    kubeconfig_path: ~/.kube/config.yaml
+    provider: digitalocean       # display label only — your doctl context name
+    region: blr1
+

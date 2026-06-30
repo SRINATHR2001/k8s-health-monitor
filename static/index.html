@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>K8s Health Monitor</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <style>
+    body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+
+    /* ── Sidebar ─────────────────────────────────────────── */
+    .sidebar { background: #0f172a; }
+    .cluster-item {
+      transition: background 0.12s, border-color 0.12s;
+      border-left: 3px solid transparent;
+      border-radius: 6px;
+    }
+    .cluster-item:hover  { background: #1e293b; }
+    .cluster-item.active { background: #1e293b; border-left-color: #3b82f6; border-radius: 6px; }
+
+    /* ── Status dots ─────────────────────────────────────── */
+    .sdot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
+    .sdot-connected { background: #10b981; animation: pulse-g 2.4s infinite; }
+    .sdot-expired   { background: #f59e0b; }
+    .sdot-error     { background: #ef4444; }
+    .sdot-unknown   { background: #6b7280; }
+    @keyframes pulse-g {
+      0%,100% { box-shadow: 0 0 0 0 rgba(16,185,129,.5); }
+      50%      { box-shadow: 0 0 0 4px rgba(16,185,129,.1); }
+    }
+
+    /* ── Tabs ────────────────────────────────────────────── */
+    .tab-btn {
+      color: #94a3b8; font-size: 13px; font-weight: 500;
+      padding: 11px 2px; border-bottom: 2px solid transparent;
+      transition: color 0.12s, border-color 0.12s; white-space: nowrap;
+    }
+    .tab-btn:hover { color: #475569; }
+    .tab-active { color: #2563eb !important; border-bottom-color: #2563eb !important; font-weight: 600; }
+
+    /* ── Badges ──────────────────────────────────────────── */
+    .badge {
+      display: inline-flex; align-items: center; padding: 1px 7px;
+      border-radius: 9999px; font-size: 11px; font-weight: 600;
+      letter-spacing: 0.02em; white-space: nowrap;
+    }
+    .b-green  { background: #d1fae5; color: #065f46; }
+    .b-red    { background: #fee2e2; color: #991b1b; }
+    .b-yellow { background: #fef3c7; color: #92400e; }
+    .b-blue   { background: #dbeafe; color: #1e40af; }
+    .b-purple { background: #ede9fe; color: #5b21b6; }
+    .b-teal   { background: #ccfbf1; color: #115e59; }
+    .b-slate  { background: #f1f5f9; color: #475569; }
+    .b-indigo { background: #e0e7ff; color: #3730a3; }
+
+    /* ── Resource bars ───────────────────────────────────── */
+    .rbar       { height: 5px; border-radius: 3px; background: #e2e8f0; overflow: hidden; }
+    .rfill      { height: 100%; border-radius: 3px; transition: width 0.4s ease; }
+    .rf-green   { background: linear-gradient(90deg,#10b981,#34d399); }
+    .rf-yellow  { background: linear-gradient(90deg,#f59e0b,#fbbf24); }
+    .rf-red     { background: linear-gradient(90deg,#ef4444,#f87171); }
+
+    /* ── Data tables ─────────────────────────────────────── */
+    .dtable              { width: 100%; border-collapse: collapse; }
+    .dtable th           { background: #f8fafc; color: #64748b; font-size: 11px; font-weight: 600;
+                           text-transform: uppercase; letter-spacing: 0.05em;
+                           padding: 10px 14px; text-align: left;
+                           border-bottom: 1px solid #e2e8f0;
+                           position: sticky; top: 0; z-index: 10; }
+    .dtable td           { padding: 7px 14px; border-bottom: 1px solid #f1f5f9;
+                           vertical-align: middle; font-size: 13px; }
+    .dtable tr:last-child td { border-bottom: none; }
+    .dtable tbody tr:hover td { background: #f8fafc; }
+
+    .row-bad  td          { background: rgba(239,68,68,.04); }
+    .row-bad  td:first-child { box-shadow: inset 3px 0 0 #ef4444; }
+    .row-warn td          { background: rgba(245,158,11,.04); }
+    .row-warn td:first-child { box-shadow: inset 3px 0 0 #f59e0b; }
+
+    /* ── Cards ───────────────────────────────────────────── */
+    .stat-card    { background: #fff; border-radius: 12px; border: 1px solid #e2e8f0;
+                    padding: 20px; box-shadow: 0 1px 3px rgba(0,0,0,.05); }
+    .problem-card { background: #fff; border-radius: 10px; border: 1px solid #e2e8f0;
+                    overflow: hidden; box-shadow: 0 1px 2px rgba(0,0,0,.04); }
+    .table-card   { background: #fff; border-radius: 10px; border: 1px solid #e2e8f0;
+                    overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,.05); }
+
+    /* ── Filter bar ──────────────────────────────────────── */
+    .filter-bar   { background: #fff; border-radius: 8px; border: 1px solid #e2e8f0;
+                    padding: 8px 12px; display: flex; align-items: center; gap: 10px;
+                    margin-bottom: 14px; box-shadow: 0 1px 2px rgba(0,0,0,.04); flex-wrap: wrap; }
+
+    /* ── Misc ────────────────────────────────────────────── */
+    .spinner { border: 2px solid #e5e7eb; border-top-color: #3b82f6;
+               border-radius: 50%; width: 14px; height: 14px;
+               animation: spin .8s linear infinite; display: inline-block; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    pre.cmd { background: #0f172a; color: #e2e8f0; padding: 10px 14px; border-radius: 6px;
+              font-family: ui-monospace, monospace; font-size: 13px;
+              overflow-x: auto; user-select: all; }
+
+    ::-webkit-scrollbar       { width: 5px; height: 5px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+  </style>
+</head>
+<body class="bg-slate-50 text-slate-800">
+<div class="flex h-screen overflow-hidden">
+
+  <!-- ── Sidebar ──────────────────────────────────────────── -->
+  <aside class="sidebar flex flex-col flex-shrink-0" style="width:256px">
+    <div class="px-4 py-4 border-b border-slate-700/50">
+      <div class="flex items-center gap-2.5">
+        <!-- Kubernetes wheel (simplified) -->
+        <svg class="w-7 h-7 flex-shrink-0" viewBox="0 0 24 24" fill="none">
+          <circle cx="12" cy="12" r="10" stroke="#3b82f6" stroke-width="1.5"/>
+          <circle cx="12" cy="12" r="2.5" fill="#3b82f6"/>
+          <line x1="12" y1="2"  x2="12" y2="6"  stroke="#60a5fa" stroke-width="1.5" stroke-linecap="round"/>
+          <line x1="12" y1="18" x2="12" y2="22" stroke="#60a5fa" stroke-width="1.5" stroke-linecap="round"/>
+          <line x1="2"  y1="12" x2="6"  y2="12" stroke="#60a5fa" stroke-width="1.5" stroke-linecap="round"/>
+          <line x1="18" y1="12" x2="22" y2="12" stroke="#60a5fa" stroke-width="1.5" stroke-linecap="round"/>
+          <line x1="4.93" y1="4.93"  x2="7.76" y2="7.76"  stroke="#60a5fa" stroke-width="1.5" stroke-linecap="round"/>
+          <line x1="16.24" y1="16.24" x2="19.07" y2="19.07" stroke="#60a5fa" stroke-width="1.5" stroke-linecap="round"/>
+          <line x1="19.07" y1="4.93"  x2="16.24" y2="7.76"  stroke="#60a5fa" stroke-width="1.5" stroke-linecap="round"/>
+          <line x1="7.76"  y1="16.24" x2="4.93"  y2="19.07" stroke="#60a5fa" stroke-width="1.5" stroke-linecap="round"/>
+        </svg>
+        <div>
+          <div class="text-white font-semibold text-sm leading-tight">K8s Monitor</div>
+          <div class="text-slate-500 text-xs" id="lastRefresh">Initializing…</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="px-4 pt-3 pb-1">
+      <p class="text-slate-600 text-xs font-semibold uppercase tracking-wider">Clusters</p>
+    </div>
+
+    <nav id="clusterList" class="flex-1 overflow-y-auto px-2 pb-2 space-y-0.5"></nav>
+
+    <div class="px-4 py-3 border-t border-slate-700/50 flex items-center justify-between">
+      <span class="text-slate-600 text-xs">Auto-refresh</span>
+      <span class="text-slate-400 text-xs font-mono"><span id="refreshInterval">—</span>s</span>
+    </div>
+  </aside>
+
+  <!-- ── Main ─────────────────────────────────────────────── -->
+  <main class="flex-1 overflow-y-auto flex flex-col min-w-0">
+
+    <!-- Re-auth banner -->
+    <div id="reauthBanner" class="hidden bg-amber-50 border-b border-amber-200 px-6 py-4 flex-shrink-0">
+      <div class="flex items-start justify-between gap-4">
+        <div class="flex-1 min-w-0">
+          <p class="font-semibold text-amber-900 text-sm" id="reauthTitle"></p>
+          <p class="text-xs text-amber-800 mt-1" id="reauthHint"></p>
+          <pre class="cmd mt-3 text-xs" id="reauthCmd"></pre>
+        </div>
+        <div class="flex gap-2 flex-shrink-0">
+          <button id="reauthCopyBtn"
+            class="px-3 py-1.5 text-xs bg-white border border-amber-300 rounded-lg hover:bg-amber-100 font-medium">
+            Copy
+          </button>
+          <button id="reauthDoneBtn"
+            class="px-3 py-1.5 text-xs bg-amber-600 text-white rounded-lg hover:bg-amber-700 font-medium">
+            I've re-authenticated
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Header -->
+    <header class="px-6 py-4 bg-white border-b border-slate-200 flex items-center justify-between flex-shrink-0">
+      <div class="flex items-center gap-3 min-w-0">
+        <div class="min-w-0">
+          <h2 id="clusterTitle" class="text-lg font-semibold text-slate-900 truncate">Select a cluster</h2>
+          <p id="clusterSubtitle" class="text-xs text-slate-400 mt-0.5 truncate"></p>
+        </div>
+        <span id="clusterStatusBadge"></span>
+      </div>
+      <div class="flex items-center gap-3 flex-shrink-0">
+        <span id="loadingIndicator" class="hidden text-xs text-slate-400 flex items-center gap-1.5">
+          <span class="spinner"></span> Loading…
+        </span>
+        <button id="refreshBtn"
+          class="px-4 py-1.5 text-xs bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-semibold transition-colors">
+          ↻ Refresh
+        </button>
+      </div>
+    </header>
+
+    <!-- Tabs -->
+    <nav class="px-6 bg-white border-b border-slate-200 flex gap-5 flex-shrink-0">
+      <button data-tab="overview"  class="tab-btn tab-active">Overview</button>
+      <button data-tab="pods"      class="tab-btn">Pods</button>
+      <button data-tab="nodes"     class="tab-btn">Nodes</button>
+      <button data-tab="workloads" class="tab-btn">Workloads</button>
+      <button data-tab="pvcs"      class="tab-btn">PVCs</button>
+      <button data-tab="events"    class="tab-btn">Events</button>
+    </nav>
+
+    <!-- Content -->
+    <section id="content" class="p-6 flex-1"></section>
+  </main>
+</div>
+<script src="/static/app.js"></script>
+</body>
+</html>
