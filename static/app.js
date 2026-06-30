@@ -1109,11 +1109,16 @@ function openExec(cluster, ns, pod, container) {
   _execFit = new FitAddon.FitAddon();
   _execTerm.loadAddon(_execFit);
   _execTerm.open(el);
-  _execFit.fit();
+  _execFit.fit();  // measure actual cols/rows before opening WS
 
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
-  const q = container ? `?container=${encodeURIComponent(container)}` : "";
-  const url = `${proto}//${location.host}/ws/clusters/${encodeURIComponent(cluster)}/pods/${encodeURIComponent(ns)}/${encodeURIComponent(pod)}/exec${q}`;
+  const q = new URLSearchParams();
+  if (container) q.set("container", container);
+  // Pass real terminal dimensions so the backend sets COLUMNS/LINES before
+  // exec starts — critical for readline-based programs like rails console.
+  q.set("cols", _execTerm.cols);
+  q.set("rows", _execTerm.rows);
+  const url = `${proto}//${location.host}/ws/clusters/${encodeURIComponent(cluster)}/pods/${encodeURIComponent(ns)}/${encodeURIComponent(pod)}/exec?${q}`;
 
   _execWs = new WebSocket(url);
   _execWs.onopen = () => { _sendResize(); };

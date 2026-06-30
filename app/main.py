@@ -234,6 +234,8 @@ async def pod_exec_ws(
     namespace: str,
     pod_name: str,
     container: Optional[str] = Query(None),
+    cols: int = Query(220),
+    rows: int = Query(50),
 ):
     await websocket.accept()
     if cluster_mgr is None:
@@ -246,12 +248,20 @@ async def pod_exec_ws(
 
     from kubernetes.stream import stream as k8s_stream
 
+    # Set COLUMNS/LINES from the client's actual terminal size so that
+    # programs like IRB/Rails console get the correct width before SIGWINCH
+    # arrives (they read TIOCGWINSZ at startup and hang on 0×0).
+    startup_cmd = (
+        f"export TERM=xterm-256color COLUMNS={cols} LINES={rows}; "
+        "[ -x /bin/bash ] && exec /bin/bash || exec /bin/sh"
+    )
+
     try:
         resp = k8s_stream(
             cc.core_v1.connect_get_namespaced_pod_exec,
             pod_name,
             namespace,
-            command=["sh", "-c", "export TERM=xterm-256color; exec sh"],
+            command=["sh", "-c", startup_cmd],
             container=container,
             stderr=True,
             stdin=True,
@@ -273,11 +283,19 @@ async def pod_exec_ws(
     def _poll():
         try:
             while resp.is_open():
-                resp.update(timeout=0.05)
-                while resp.peek_stdout():
-                    loop.call_soon_threadsafe(out_queue.put_nowait, resp.read_stdout())
-                while resp.peek_stderr():
-                    loop.call_soon_threadsafe(out_queue.put_nowait, resp.read_stderr())
+                resp.update(timeout=0.005)  # 5 ms — keeps output latency low
+                # Drain ALL buffered frames before sleeping again
+                drained = True
+                while drained:
+                    drained = False
+                    while resp.peek_stdout():
+                        loop.call_soon_threadsafe(out_queue.put_nowait, resp.read_stdout())
+                        drained = True
+                    while resp.peek_stderr():
+                        loop.call_soon_threadsafe(out_queue.put_nowait, resp.read_stderr())
+                        drained = True
+                    if drained:
+                        resp.update(timeout=0)  # non-blocking: grab any queued frames
         finally:
             loop.call_soon_threadsafe(out_queue.put_nowait, None)
 
