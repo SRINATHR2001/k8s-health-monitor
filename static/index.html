@@ -6,6 +6,9 @@
   <title>K8s Health Monitor</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" />
+  <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.js"></script>
   <style>
     body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
 
@@ -197,6 +200,8 @@
       <button data-tab="nodes"     class="tab-btn">Nodes</button>
       <button data-tab="workloads" class="tab-btn">Workloads</button>
       <button data-tab="pvcs"      class="tab-btn">PVCs</button>
+      <button data-tab="cronjobs"  class="tab-btn">CronJobs</button>
+      <button data-tab="services"  class="tab-btn">Services</button>
       <button data-tab="events"    class="tab-btn">Events</button>
     </nav>
 
@@ -204,6 +209,59 @@
     <section id="content" class="p-6 flex-1"></section>
   </main>
 </div>
+<!-- ── Describe Panel ─────────────────────────────────────────────────── -->
+<div id="describeOverlay" class="hidden fixed inset-0 z-40" style="background:rgba(0,0,0,.35)" onclick="closeDescribe()"></div>
+<div id="describePanel"
+     class="fixed inset-y-0 right-0 z-50 bg-white flex flex-col"
+     style="width:min(680px,95vw);transform:translateX(100%);transition:transform .25s ease;box-shadow:-4px 0 24px rgba(0,0,0,.12)">
+  <div class="flex items-center justify-between px-6 py-4 border-b border-slate-200 flex-shrink-0">
+    <div class="min-w-0">
+      <h3 id="describeTitle" class="text-base font-semibold text-slate-900 truncate"></h3>
+      <p  id="describeSubtitle" class="text-xs text-slate-400 mt-0.5"></p>
+    </div>
+    <button onclick="closeDescribe()" class="ml-4 flex-shrink-0 text-slate-400 hover:text-slate-700 text-xl leading-none">✕</button>
+  </div>
+  <div id="describeContent" class="flex-1 overflow-y-auto p-6 text-sm"></div>
+</div>
+
+<!-- ── Logs Modal ──────────────────────────────────────────────────────── -->
+<div id="logsModal" class="hidden fixed inset-0 z-50 flex items-center justify-center" style="background:rgba(0,0,0,.6)">
+  <div style="background:#0f172a;border-radius:12px;width:90vw;max-width:1100px;height:72vh;display:flex;flex-direction:column;overflow:hidden">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid #1e293b;flex-shrink:0">
+      <div style="display:flex;align-items:center;gap:10px">
+        <span style="font-size:13px;font-weight:600;color:#e2e8f0">Logs</span>
+        <span id="logsTitle" style="font-family:monospace;font-size:12px;color:#64748b"></span>
+        <label style="display:flex;align-items:center;gap:5px;cursor:pointer">
+          <input type="checkbox" id="logsPrevious" style="accent-color:#3b82f6">
+          <span style="font-size:11px;color:#64748b">Previous</span>
+        </label>
+        <button id="logsRefreshBtn" onclick="refreshLogs()"
+          style="font-size:11px;padding:3px 10px;background:#1e293b;border:1px solid #334155;border-radius:6px;cursor:pointer;color:#94a3b8">
+          ↻ Refresh
+        </button>
+      </div>
+      <button onclick="closeLogs()" style="color:#475569;font-size:18px;background:none;border:none;cursor:pointer;padding:4px 8px">✕</button>
+    </div>
+    <div style="flex:1;overflow-y:auto;padding:12px 16px" id="logsScroll">
+      <pre id="logsContent" style="font-family:ui-monospace,monospace;font-size:12px;color:#94a3b8;white-space:pre-wrap;word-break:break-all;margin:0"></pre>
+    </div>
+  </div>
+</div>
+
+<!-- ── Exec Modal ─────────────────────────────────────────────────────── -->
+<div id="execModal" class="hidden fixed inset-0 z-50 flex items-center justify-center" style="background:rgba(0,0,0,.6)">
+  <div style="background:#0f172a;border-radius:12px;width:90vw;max-width:1100px;height:72vh;display:flex;flex-direction:column;overflow:hidden">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid #1e293b;flex-shrink:0">
+      <div style="display:flex;align-items:center;gap:8px">
+        <span style="font-size:13px;font-weight:600;color:#e2e8f0">Exec</span>
+        <span id="execTitle" style="font-family:monospace;font-size:12px;color:#64748b"></span>
+      </div>
+      <button onclick="closeExec()" style="color:#475569;font-size:18px;background:none;border:none;cursor:pointer;padding:4px 8px">✕</button>
+    </div>
+    <div id="execTerminal" style="flex:1;overflow:hidden;padding:4px 0"></div>
+  </div>
+</div>
+
 <script src="/static/app.js"></script>
 </body>
 </html>

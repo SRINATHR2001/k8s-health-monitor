@@ -1,14 +1,17 @@
 """FastAPI app — exposes cluster/pod health endpoints + serves the dashboard."""
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import os
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
 from app import collectors
@@ -165,7 +168,153 @@ def cluster_namespaces(name: str):
 @app.get("/api/clusters/{name}/pvcs")
 def cluster_pvcs(name: str, namespace: Optional[str] = Query(None)):
     cc = _get_or_raise(name)
-    return collectors.get_pvcs(cc, namespace)
+    return collectors.get_pvcs_with_pods(cc, namespace)
+
+
+@app.get("/api/clusters/{name}/services")
+def cluster_services(name: str, namespace: Optional[str] = Query(None)):
+    cc = _get_or_raise(name)
+    return collectors.get_services(cc, namespace)
+
+
+@app.get("/api/clusters/{name}/jobs")
+def cluster_jobs(name: str, namespace: Optional[str] = Query(None)):
+    cc = _get_or_raise(name)
+    return collectors.get_jobs(cc, namespace)
+
+
+@app.get("/api/clusters/{name}/cronjobs")
+def cluster_cronjobs(name: str, namespace: Optional[str] = Query(None)):
+    cc = _get_or_raise(name)
+    return collectors.get_cronjobs(cc, namespace)
+
+
+# ---------- describe ----------
+
+@app.get("/api/clusters/{name}/pods/{namespace}/{pod_name}/describe")
+def describe_pod(name: str, namespace: str, pod_name: str):
+    cc = _get_or_raise(name)
+    return collectors.describe_pod(cc, namespace, pod_name)
+
+
+@app.get("/api/clusters/{name}/nodes/{node_name}/describe")
+def describe_node(name: str, node_name: str):
+    cc = _get_or_raise(name)
+    return collectors.describe_node(cc, node_name)
+
+
+@app.get("/api/clusters/{name}/workloads/{namespace}/{kind}/{workload_name}/describe")
+def describe_workload(name: str, namespace: str, kind: str, workload_name: str):
+    cc = _get_or_raise(name)
+    return collectors.describe_workload(cc, namespace, kind, workload_name)
+
+
+# ---------- pod logs ----------
+
+@app.get("/api/clusters/{name}/pods/{namespace}/{pod_name}/logs")
+def pod_logs(
+    name: str,
+    namespace: str,
+    pod_name: str,
+    container: Optional[str] = Query(None),
+    tail: int = Query(300),
+    previous: bool = Query(False),
+):
+    cc = _get_or_raise(name)
+    logs = collectors.get_pod_logs(cc, namespace, pod_name, container, tail, previous)
+    return PlainTextResponse(logs)
+
+
+# ---------- pod exec (WebSocket) ----------
+
+@app.websocket("/ws/clusters/{cluster_name}/pods/{namespace}/{pod_name}/exec")
+async def pod_exec_ws(
+    websocket: WebSocket,
+    cluster_name: str,
+    namespace: str,
+    pod_name: str,
+    container: Optional[str] = Query(None),
+):
+    await websocket.accept()
+    if cluster_mgr is None:
+        await websocket.close(1008, "Not ready")
+        return
+    cc = cluster_mgr.get(cluster_name)
+    if not cc or cc.status != "connected":
+        await websocket.close(1008, "Cluster not connected")
+        return
+
+    from kubernetes.stream import stream as k8s_stream
+
+    try:
+        resp = k8s_stream(
+            cc.core_v1.connect_get_namespaced_pod_exec,
+            pod_name,
+            namespace,
+            command=["sh", "-c", "export TERM=xterm-256color; exec sh"],
+            container=container,
+            stderr=True,
+            stdin=True,
+            stdout=True,
+            tty=True,
+            _preload_content=False,
+        )
+    except Exception as e:
+        try:
+            await websocket.send_text(f"\r\n\x1b[31mFailed to start exec: {e}\x1b[0m\r\n")
+            await websocket.close(1011)
+        except Exception:
+            pass
+        return
+
+    loop = asyncio.get_event_loop()
+    out_queue: asyncio.Queue = asyncio.Queue()
+
+    def _poll():
+        try:
+            while resp.is_open():
+                resp.update(timeout=0.05)
+                while resp.peek_stdout():
+                    loop.call_soon_threadsafe(out_queue.put_nowait, resp.read_stdout())
+                while resp.peek_stderr():
+                    loop.call_soon_threadsafe(out_queue.put_nowait, resp.read_stderr())
+        finally:
+            loop.call_soon_threadsafe(out_queue.put_nowait, None)
+
+    threading.Thread(target=_poll, daemon=True).start()
+
+    async def _forward_output():
+        while True:
+            chunk = await out_queue.get()
+            if chunk is None:
+                return
+            await websocket.send_text(chunk)
+
+    async def _forward_input():
+        while True:
+            try:
+                msg = await websocket.receive_text()
+                try:
+                    data = json.loads(msg)
+                    if data.get("type") == "resize":
+                        resp.write_channel(4, json.dumps({"Width": data["cols"], "Height": data["rows"]}))
+                        continue
+                except (json.JSONDecodeError, KeyError, TypeError):
+                    pass
+                resp.write_stdin(msg)
+            except (WebSocketDisconnect, Exception):
+                return
+
+    send_task = asyncio.create_task(_forward_output())
+    recv_task = asyncio.create_task(_forward_input())
+    done, pending = await asyncio.wait([send_task, recv_task], return_when=asyncio.FIRST_COMPLETED)
+    for t in pending:
+        t.cancel()
+    resp.close()
+    try:
+        await websocket.close()
+    except Exception:
+        pass
 
 
 # ---------- static UI ----------

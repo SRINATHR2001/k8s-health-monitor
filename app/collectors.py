@@ -66,7 +66,8 @@ def _pod_summary(p) -> dict[str, Any]:
         "node": p.spec.node_name,
         "age_seconds": _age_seconds(p.metadata.creation_timestamp),
         "reason": waiting_reasons[0] if waiting_reasons else None,
-        "containers": [_container_state(cs) for cs in statuses],
+        "container_names": [c.name for c in p.spec.containers],
+        "containers": [{"name": cs.name, **_container_state(cs)} for cs in statuses],
         "healthy": p.status.phase in ("Running", "Succeeded") and ready == total and not waiting_reasons,
     }
 
@@ -340,6 +341,386 @@ def get_namespaces(cc: ClusterClient) -> list[str]:
         return cc.core_v1.list_namespace().items
     items = _safe(cc, fetch, [])
     return sorted(n.metadata.name for n in items)
+
+
+# ---------- services ----------
+
+def _svc_summary(s) -> dict[str, Any]:
+    spec = s.spec
+    lb_ip = None
+    if s.status and s.status.load_balancer and s.status.load_balancer.ingress:
+        first = s.status.load_balancer.ingress[0]
+        lb_ip = first.ip or first.hostname
+    ports = [
+        {
+            "name": p.name,
+            "port": p.port,
+            "target_port": str(p.target_port),
+            "protocol": p.protocol,
+            "node_port": p.node_port,
+        }
+        for p in (spec.ports or [])
+    ]
+    return {
+        "namespace": s.metadata.namespace,
+        "name": s.metadata.name,
+        "type": spec.type,
+        "cluster_ip": spec.cluster_ip,
+        "external_ips": spec.external_i_ps or [],
+        "load_balancer_ip": lb_ip,
+        "ports": ports,
+        "selector": spec.selector or {},
+        "age_seconds": _age_seconds(s.metadata.creation_timestamp),
+    }
+
+
+def get_services(cc: ClusterClient, namespace: Optional[str] = None) -> list[dict]:
+    def fetch():
+        if namespace:
+            return cc.core_v1.list_namespaced_service(namespace).items
+        return cc.core_v1.list_service_for_all_namespaces().items
+    return [_svc_summary(s) for s in _safe(cc, fetch, [])]
+
+
+# ---------- batch: jobs + cronjobs ----------
+
+def _job_summary(j) -> dict[str, Any]:
+    s = j.status
+    spec = j.spec
+    conditions = {c.type: c.status for c in (s.conditions or [])}
+    complete = conditions.get("Complete") == "True"
+    job_failed = conditions.get("Failed") == "True"
+    duration = None
+    if s.start_time and s.completion_time:
+        duration = int((s.completion_time - s.start_time).total_seconds())
+    return {
+        "namespace": j.metadata.namespace,
+        "name": j.metadata.name,
+        "completions": spec.completions or 1,
+        "parallelism": spec.parallelism or 1,
+        "succeeded": s.succeeded or 0,
+        "failed_pods": s.failed or 0,
+        "active": s.active or 0,
+        "start_time": s.start_time.isoformat() if s.start_time else None,
+        "completion_time": s.completion_time.isoformat() if s.completion_time else None,
+        "duration_seconds": duration,
+        "age_seconds": _age_seconds(j.metadata.creation_timestamp),
+        "complete": complete,
+        "failed_status": job_failed,
+        "healthy": complete and not job_failed,
+        "owner": next(
+            (r.name for r in (j.metadata.owner_references or []) if r.kind == "CronJob"),
+            None,
+        ),
+    }
+
+
+def get_jobs(cc: ClusterClient, namespace: Optional[str] = None) -> list[dict]:
+    from kubernetes import client as k8s_client
+    batch = k8s_client.BatchV1Api(cc.api_client)
+
+    def fetch():
+        if namespace:
+            return batch.list_namespaced_job(namespace).items
+        return batch.list_job_for_all_namespaces().items
+
+    return [_job_summary(j) for j in _safe(cc, fetch, [])]
+
+
+def _cronjob_summary(cj) -> dict[str, Any]:
+    s = cj.status
+    spec = cj.spec
+    active = s.active or []
+    last_sched = s.last_schedule_time
+    last_success = getattr(s, "last_successful_time", None)
+    return {
+        "namespace": cj.metadata.namespace,
+        "name": cj.metadata.name,
+        "schedule": spec.schedule,
+        "suspend": spec.suspend or False,
+        "active": len(active),
+        "last_schedule": last_sched.isoformat() if last_sched else None,
+        "last_schedule_age_seconds": _age_seconds(last_sched),
+        "last_successful_time": last_success.isoformat() if last_success else None,
+        "concurrency_policy": spec.concurrency_policy,
+        "successful_jobs_history": spec.successful_jobs_history_limit,
+        "failed_jobs_history": spec.failed_jobs_history_limit,
+        "age_seconds": _age_seconds(cj.metadata.creation_timestamp),
+        "healthy": not (spec.suspend or False),
+    }
+
+
+def get_cronjobs(cc: ClusterClient, namespace: Optional[str] = None) -> list[dict]:
+    from kubernetes import client as k8s_client
+    batch = k8s_client.BatchV1Api(cc.api_client)
+
+    def fetch():
+        if namespace:
+            return batch.list_namespaced_cron_job(namespace).items
+        return batch.list_cron_job_for_all_namespaces().items
+
+    return [_cronjob_summary(cj) for cj in _safe(cc, fetch, [])]
+
+
+# ---------- pvcs with pod bindings ----------
+
+def get_pvcs_with_pods(cc: ClusterClient, namespace: Optional[str] = None) -> list[dict]:
+    def fetch_pods():
+        if namespace:
+            return cc.core_v1.list_namespaced_pod(namespace).items
+        return cc.core_v1.list_pod_for_all_namespaces().items
+
+    pvcs = get_pvcs(cc, namespace)
+    pods = _safe(cc, fetch_pods, [])
+
+    pvc_pods: dict[str, list] = {}
+    for pod in pods:
+        for vol in (pod.spec.volumes or []):
+            if vol.persistent_volume_claim:
+                key = f"{pod.metadata.namespace}/{vol.persistent_volume_claim.claim_name}"
+                pvc_pods.setdefault(key, []).append({
+                    "name": pod.metadata.name,
+                    "namespace": pod.metadata.namespace,
+                    "phase": pod.status.phase,
+                })
+
+    for pvc in pvcs:
+        key = f"{pvc['namespace']}/{pvc['name']}"
+        pvc["pods"] = pvc_pods.get(key, [])
+
+    return pvcs
+
+
+# ---------- pod logs ----------
+
+def get_pod_logs(
+    cc: ClusterClient,
+    namespace: str,
+    name: str,
+    container: Optional[str] = None,
+    tail_lines: int = 300,
+    previous: bool = False,
+) -> str:
+    def fetch():
+        return cc.core_v1.read_namespaced_pod_log(
+            name,
+            namespace,
+            container=container,
+            tail_lines=tail_lines,
+            previous=previous,
+            timestamps=True,
+        )
+    return _safe(cc, fetch, "") or ""
+
+
+# ---------- describe ----------
+
+_KIND_NAMES = {
+    "deployment": "Deployment",
+    "statefulset": "StatefulSet",
+    "daemonset": "DaemonSet",
+}
+
+
+def describe_pod(cc: ClusterClient, namespace: str, name: str) -> dict:
+    pod = _safe(cc, lambda: cc.core_v1.read_namespaced_pod(name, namespace), None)
+    if pod is None:
+        return {}
+    evs = _safe(cc, lambda: cc.core_v1.list_namespaced_event(
+        namespace,
+        field_selector=f"involvedObject.name={name},involvedObject.kind=Pod",
+    ).items, [])
+
+    spec_by_name = {c.name: c for c in (pod.spec.containers or [])}
+    containers = []
+    for cs in (pod.status.container_statuses or []):
+        spec = spec_by_name.get(cs.name)
+        res: dict[str, Any] = {}
+        if spec and spec.resources:
+            res = {
+                "requests": dict(spec.resources.requests or {}),
+                "limits": dict(spec.resources.limits or {}),
+            }
+        env = []
+        if spec:
+            for e in (spec.env or []):
+                env.append({"name": e.name,
+                             "value": e.value if e.value is not None else "<from configmap/secret>"})
+        containers.append({
+            "name": cs.name,
+            "image": cs.image,
+            "ready": cs.ready,
+            "restart_count": cs.restart_count,
+            "state": _container_state(cs),
+            "resources": res,
+            "env": env,
+            "ports": [
+                {"name": p.name, "container_port": p.container_port, "protocol": p.protocol}
+                for p in (spec.ports or [])
+            ] if spec else [],
+            "volume_mounts": [
+                {"name": vm.name, "mount_path": vm.mount_path, "read_only": vm.read_only or False}
+                for vm in (spec.volume_mounts or [])
+            ] if spec else [],
+        })
+
+    volumes = []
+    for v in (pod.spec.volumes or []):
+        vol: dict[str, Any] = {"name": v.name}
+        if v.config_map:
+            vol.update({"type": "ConfigMap", "ref": v.config_map.name})
+        elif v.secret:
+            vol.update({"type": "Secret", "ref": v.secret.secret_name})
+        elif v.persistent_volume_claim:
+            vol.update({"type": "PVC", "ref": v.persistent_volume_claim.claim_name})
+        elif v.empty_dir is not None:
+            vol.update({"type": "EmptyDir"})
+        elif v.host_path:
+            vol.update({"type": "HostPath", "ref": v.host_path.path})
+        else:
+            vol.update({"type": "Other"})
+        volumes.append(vol)
+
+    sorted_evs = sorted(evs, key=lambda e: _event_ts(e) or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+    return {
+        "name": pod.metadata.name,
+        "namespace": pod.metadata.namespace,
+        "node": pod.spec.node_name,
+        "pod_ip": pod.status.pod_ip,
+        "host_ip": pod.status.host_ip,
+        "phase": pod.status.phase,
+        "qos_class": pod.status.qos_class,
+        "service_account": pod.spec.service_account_name,
+        "labels": pod.metadata.labels or {},
+        "annotations": {
+            k: v
+            for k, v in (pod.metadata.annotations or {}).items()
+            if not k.startswith("kubectl.kubernetes.io/last-applied")
+        },
+        "containers": containers,
+        "volumes": volumes,
+        "age_seconds": _age_seconds(pod.metadata.creation_timestamp),
+        "events": [_event_summary(e) for e in sorted_evs[:20]],
+    }
+
+
+def describe_node(cc: ClusterClient, name: str) -> dict:
+    node = _safe(cc, lambda: cc.core_v1.read_node(name), None)
+    if node is None:
+        return {}
+    evs = _safe(cc, lambda: cc.core_v1.list_event_for_all_namespaces(
+        field_selector=f"involvedObject.name={name},involvedObject.kind=Node",
+    ).items, [])
+
+    labels = node.metadata.labels or {}
+    roles = sorted({k.split("/")[1] for k in labels if k.startswith("node-role.kubernetes.io/")}) or ["worker"]
+    cap = node.status.capacity or {}
+    alloc = node.status.allocatable or {}
+    info = node.status.node_info
+
+    sorted_evs = sorted(evs, key=lambda e: _event_ts(e) or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+    return {
+        "name": node.metadata.name,
+        "roles": roles,
+        "labels": labels,
+        "taints": [
+            {"key": t.key, "value": t.value, "effect": t.effect}
+            for t in (node.spec.taints or [])
+        ],
+        "addresses": {a.type: a.address for a in (node.status.addresses or [])},
+        "conditions": {
+            c.type: {"status": c.status, "message": c.message, "reason": c.reason}
+            for c in (node.status.conditions or [])
+        },
+        "capacity": {
+            "cpu_cores": _parse_cpu(cap.get("cpu")),
+            "memory_bytes": _parse_memory(cap.get("memory")),
+            "pods": int(cap.get("pods", 0)),
+        },
+        "allocatable": {
+            "cpu_cores": _parse_cpu(alloc.get("cpu")),
+            "memory_bytes": _parse_memory(alloc.get("memory")),
+            "pods": int(alloc.get("pods", 0)),
+        },
+        "system_info": {
+            "os_image": info.os_image if info else None,
+            "kernel_version": info.kernel_version if info else None,
+            "kubelet_version": info.kubelet_version if info else None,
+            "container_runtime": info.container_runtime_version if info else None,
+            "architecture": info.architecture if info else None,
+        },
+        "age_seconds": _age_seconds(node.metadata.creation_timestamp),
+        "events": [_event_summary(e) for e in sorted_evs[:20]],
+    }
+
+
+def describe_workload(cc: ClusterClient, namespace: str, kind: str, name: str) -> dict:
+    kind_k8s = _KIND_NAMES.get(kind.lower())
+    if not kind_k8s:
+        return {}
+
+    def _read():
+        if kind.lower() == "deployment":
+            return cc.apps_v1.read_namespaced_deployment(name, namespace)
+        if kind.lower() == "statefulset":
+            return cc.apps_v1.read_namespaced_stateful_set(name, namespace)
+        return cc.apps_v1.read_namespaced_daemon_set(name, namespace)
+
+    obj = _safe(cc, _read, None)
+    if obj is None:
+        return {}
+    evs = _safe(cc, lambda: cc.core_v1.list_namespaced_event(
+        namespace,
+        field_selector=f"involvedObject.name={name},involvedObject.kind={kind_k8s}",
+    ).items, [])
+
+    tmpl_spec = obj.spec.template.spec if obj.spec.template and obj.spec.template.spec else None
+    containers = [
+        {
+            "name": c.name,
+            "image": c.image,
+            "resources": {
+                "requests": dict(c.resources.requests or {}) if c.resources else {},
+                "limits": dict(c.resources.limits or {}) if c.resources else {},
+            },
+            "ports": [
+                {"name": p.name, "container_port": p.container_port, "protocol": p.protocol}
+                for p in (c.ports or [])
+            ],
+        }
+        for c in (tmpl_spec.containers if tmpl_spec else [])
+    ]
+
+    strategy = None
+    if hasattr(obj.spec, "strategy") and obj.spec.strategy:
+        strategy = obj.spec.strategy.type
+    elif hasattr(obj.spec, "update_strategy") and obj.spec.update_strategy:
+        strategy = obj.spec.update_strategy.type
+
+    sorted_evs = sorted(evs, key=lambda e: _event_ts(e) or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+    return {
+        "name": obj.metadata.name,
+        "namespace": obj.metadata.namespace,
+        "kind": kind_k8s,
+        "labels": obj.metadata.labels or {},
+        "selector": obj.spec.selector.match_labels if obj.spec.selector else {},
+        "replicas": obj.spec.replicas,
+        "strategy": strategy,
+        "service_account": tmpl_spec.service_account_name if tmpl_spec else None,
+        "containers": containers,
+        "status": {
+            "replicas": obj.status.replicas or 0,
+            "ready": obj.status.ready_replicas or 0,
+            "available": getattr(obj.status, "available_replicas", None),
+            "updated": getattr(obj.status, "updated_replicas", None),
+        },
+        "conditions": {
+            c.type: {"status": c.status, "message": c.message, "reason": c.reason}
+            for c in (obj.status.conditions or [])
+        },
+        "age_seconds": _age_seconds(obj.metadata.creation_timestamp),
+        "events": [_event_summary(e) for e in sorted_evs[:20]],
+    }
 
 
 # ---------- overview rollup ----------

@@ -322,6 +322,8 @@ async function loadTab() {
     else if (state.tab === "nodes")      await renderNodes();
     else if (state.tab === "workloads")  await renderWorkloads();
     else if (state.tab === "pvcs")       await renderPVCs();
+    else if (state.tab === "cronjobs")   await renderCronJobs();
+    else if (state.tab === "services")   await renderServices();
     else if (state.tab === "events")     await renderEvents();
   } catch (e) {
     if (e.status === 503 && e.body?.needs_reauth) { await loadClusters(); }
@@ -473,20 +475,34 @@ async function renderPods() {
         <thead><tr>
           <th>Namespace</th><th>Name</th><th>Status</th>
           <th>Ready</th><th>Restarts</th><th>Reason</th>
-          <th>Node</th><th>Age</th>
+          <th>Node</th><th>Age</th><th>Actions</th>
         </tr></thead>
         <tbody id="podBody">
-          ${pods.length === 0 ? emptyState("No pods found") : pods.map(p => `
+          ${pods.length === 0 ? emptyState("No pods found") : pods.map(p => {
+            const firstCtr = (p.container_names || [])[0] || "";
+            return `
             <tr class="${!p.healthy ? "row-bad" : ""}">
               <td><span style="font-family:monospace;font-size:11px;color:#64748b">${esc(p.namespace)}</span></td>
-              <td><span style="font-family:monospace;font-size:12px;font-weight:500;color:#1e293b">${esc(p.name)}</span></td>
+              <td>
+                <button onclick="openDescribe('pod','${esc(p.namespace)}','${esc(p.name)}')"
+                  style="font-family:monospace;font-size:12px;font-weight:600;color:#2563eb;background:none;border:none;cursor:pointer;padding:0;text-align:left;text-decoration:underline;text-underline-offset:2px">
+                  ${esc(p.name)}
+                </button>
+              </td>
               <td>${podPhaseBadge(p.phase, p.healthy)}</td>
               <td style="font-size:12px;color:${p.ready && p.ready.startsWith("0/") ? "#dc2626" : "#475569"};font-weight:${p.ready && p.ready.startsWith("0/") ? "600" : "400"}">${esc(p.ready)}</td>
               <td>${restartBadge(p.restarts)}</td>
               <td>${p.reason ? badge(p.reason, "red") : '<span style="color:#e2e8f0">—</span>'}</td>
               <td><span style="font-family:monospace;font-size:11px;color:#94a3b8">${esc(p.node || "—")}</span></td>
               <td style="font-size:11px;color:#94a3b8;white-space:nowrap">${fmt.age(p.age_seconds)}</td>
-            </tr>`).join("")}
+              <td style="white-space:nowrap">
+                <button onclick="openLogs('${esc(state.selected)}','${esc(p.namespace)}','${esc(p.name)}','${esc(firstCtr)}')"
+                  style="font-size:11px;padding:2px 8px;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:5px;cursor:pointer;color:#475569">Logs</button>
+                <button onclick="openExec('${esc(state.selected)}','${esc(p.namespace)}','${esc(p.name)}','${esc(firstCtr)}')"
+                  style="font-size:11px;padding:2px 8px;background:#dbeafe;border:1px solid #bfdbfe;border-radius:5px;cursor:pointer;color:#1e40af;margin-left:4px">Exec</button>
+              </td>
+            </tr>`;
+          }).join("")}
         </tbody>
       </table>
     </div>`;
@@ -549,7 +565,12 @@ async function renderNodes() {
             const cls = !n.ready ? "row-bad" : n.pressure.length ? "row-warn" : "";
             return `
               <tr class="${cls}">
-                <td><span style="font-family:monospace;font-size:12px;font-weight:500;color:#1e293b">${esc(n.name)}</span></td>
+                <td>
+                  <button onclick="openDescribe('node','${esc(n.name)}')"
+                    style="font-family:monospace;font-size:12px;font-weight:600;color:#2563eb;background:none;border:none;cursor:pointer;padding:0;text-decoration:underline;text-underline-offset:2px">
+                    ${esc(n.name)}
+                  </button>
+                </td>
                 <td>${n.ready ? badge("Ready","green") : badge("NotReady","red")}</td>
                 <td>${n.pressure.length ? n.pressure.map(p => badge(p,"yellow")).join(" ") : '<span style="color:#e2e8f0;font-size:12px">—</span>'}</td>
                 <td style="font-size:12px;color:#475569">${m ? fmt.cores(m.cpu_cores)    : '<span style="color:#e2e8f0">—</span>'}</td>
@@ -595,7 +616,12 @@ async function renderWorkloads() {
               <tr class="${!w.healthy ? "row-bad" : ""}">
                 <td>${kindBadge(w.kind)}</td>
                 <td><span style="font-family:monospace;font-size:11px;color:#64748b">${esc(w.namespace)}</span></td>
-                <td><span style="font-family:monospace;font-size:12px;font-weight:500;color:#1e293b">${esc(w.name)}</span></td>
+                <td>
+                  <button onclick="openDescribe('workload','${esc(w.namespace)}','${esc(w.kind)}','${esc(w.name)}')"
+                    style="font-family:monospace;font-size:12px;font-weight:600;color:#2563eb;background:none;border:none;cursor:pointer;padding:0;text-decoration:underline;text-underline-offset:2px">
+                    ${esc(w.name)}
+                  </button>
+                </td>
                 <td style="font-size:12px;color:#475569">${w.replicas}</td>
                 <td>
                   <div style="display:flex;flex-direction:column;gap:4px">
@@ -630,10 +656,17 @@ async function renderPVCs() {
         <thead><tr>
           <th>Namespace</th><th>Name</th><th>Status</th>
           <th>Capacity</th><th>Storage Class</th><th>Access Modes</th>
-          <th>Volume</th><th>Age</th>
+          <th>Bound to Pods</th><th>Age</th>
         </tr></thead>
         <tbody id="pvcBody">
-          ${pvcs.length === 0 ? emptyState("No PVCs found") : pvcs.map(p => `
+          ${pvcs.length === 0 ? emptyState("No PVCs found") : pvcs.map(p => {
+            const podList = (p.pods || []).map(pod =>
+              `<span style="display:inline-flex;align-items:center;gap:3px;font-size:11px;background:#f1f5f9;padding:1px 6px;border-radius:4px;margin:1px">
+                <span style="width:6px;height:6px;border-radius:50%;background:${pod.phase === "Running" ? "#10b981" : "#f59e0b"};display:inline-block;flex-shrink:0"></span>
+                ${esc(pod.name)}
+              </span>`
+            ).join("") || '<span style="color:#cbd5e1;font-size:11px">unattached</span>';
+            return `
             <tr class="${!p.healthy ? "row-bad" : ""}">
               <td><span style="font-family:monospace;font-size:11px;color:#64748b">${esc(p.namespace)}</span></td>
               <td><span style="font-family:monospace;font-size:12px;font-weight:500;color:#1e293b">${esc(p.name)}</span></td>
@@ -641,9 +674,10 @@ async function renderPVCs() {
               <td>${badge(fmt.bytes(p.capacity_bytes), "slate")}</td>
               <td style="font-size:12px;color:#475569">${esc(p.storage_class || "—")}</td>
               <td>${(p.access_modes || []).map(m => badge(m, "slate")).join(" ") || '<span style="color:#e2e8f0">—</span>'}</td>
-              <td><span style="font-family:monospace;font-size:11px;color:#94a3b8">${esc(p.volume_name || "—")}</span></td>
+              <td style="max-width:220px">${podList}</td>
               <td style="font-size:11px;color:#94a3b8;white-space:nowrap">${fmt.age(p.age_seconds)}</td>
-            </tr>`).join("")}
+            </tr>`;
+          }).join("")}
         </tbody>
       </table>
     </div>`;
@@ -688,6 +722,427 @@ async function renderEvents() {
         </tbody>
       </table>
     </div>`;
+}
+
+// ── CronJobs ──────────────────────────────────────────────────────────
+async function renderCronJobs() {
+  const params = state.namespace ? `?namespace=${encodeURIComponent(state.namespace)}` : "";
+  const [crons, jobs] = await Promise.all([
+    api(`/api/clusters/${state.selected}/cronjobs${params}`),
+    api(`/api/clusters/${state.selected}/jobs${params}`).catch(() => []),
+  ]);
+  crons.sort((a, b) => a.healthy === b.healthy ? 0 : a.healthy ? 1 : -1);
+  jobs.sort((a, b) => a.healthy === b.healthy ? 0 : a.healthy ? 1 : -1);
+
+  document.getElementById("content").innerHTML = `
+    <div class="filter-bar">
+      ${nsFilterHTML()}
+      ${searchInput("Search…", "cronBody")}
+      <span style="margin-left:auto;font-size:12px;color:#94a3b8">${crons.length} cron jobs</span>
+    </div>
+    <div class="table-card" style="overflow-x:auto;margin-bottom:20px">
+      <table class="dtable">
+        <thead><tr>
+          <th>Namespace</th><th>Name</th><th>Schedule</th><th>Status</th>
+          <th>Active</th><th>Last Run</th><th>Concurrency</th><th>Age</th>
+        </tr></thead>
+        <tbody id="cronBody">
+          ${crons.length === 0 ? emptyState("No cron jobs found") : crons.map(c => `
+            <tr class="${c.suspend ? "row-warn" : ""}">
+              <td><span style="font-family:monospace;font-size:11px;color:#64748b">${esc(c.namespace)}</span></td>
+              <td><span style="font-family:monospace;font-size:12px;font-weight:500;color:#1e293b">${esc(c.name)}</span></td>
+              <td><code style="font-size:12px;background:#f1f5f9;padding:2px 6px;border-radius:4px;color:#334155">${esc(c.schedule)}</code></td>
+              <td>${c.suspend ? badge("Suspended","yellow") : badge("Active","green")}</td>
+              <td style="font-size:12px;color:#475569">${c.active > 0 ? badge(c.active + " running","blue") : '<span style="color:#cbd5e1">0</span>'}</td>
+              <td style="font-size:11px;color:#94a3b8">${c.last_schedule_age_seconds != null ? fmt.age(c.last_schedule_age_seconds) + " ago" : "—"}</td>
+              <td style="font-size:11px;color:#64748b">${esc(c.concurrency_policy || "—")}</td>
+              <td style="font-size:11px;color:#94a3b8">${fmt.age(c.age_seconds)}</td>
+            </tr>`).join("")}
+        </tbody>
+      </table>
+    </div>
+
+    <div style="font-size:12px;font-weight:600;color:#334155;margin-bottom:10px">Recent Jobs</div>
+    <div class="table-card" style="overflow-x:auto">
+      <table class="dtable">
+        <thead><tr>
+          <th>Namespace</th><th>Name</th><th>CronJob</th><th>Status</th>
+          <th>Succeeded</th><th>Failed</th><th>Duration</th><th>Age</th>
+        </tr></thead>
+        <tbody>
+          ${jobs.length === 0 ? emptyState("No jobs found") : jobs.slice(0, 50).map(j => `
+            <tr class="${j.failed_status ? "row-bad" : !j.complete && !j.active ? "row-warn" : ""}">
+              <td><span style="font-family:monospace;font-size:11px;color:#64748b">${esc(j.namespace)}</span></td>
+              <td><span style="font-family:monospace;font-size:12px;font-weight:500;color:#1e293b">${esc(j.name)}</span></td>
+              <td style="font-size:11px;color:#64748b">${j.owner ? esc(j.owner) : '<span style="color:#e2e8f0">—</span>'}</td>
+              <td>${j.failed_status ? badge("Failed","red") : j.complete ? badge("Complete","green") : j.active ? badge("Running","blue") : badge("Pending","yellow")}</td>
+              <td style="font-size:12px;color:#059669;font-weight:500">${j.succeeded} / ${j.completions}</td>
+              <td style="font-size:12px;color:${j.failed_pods > 0 ? "#dc2626" : "#cbd5e1"}">${j.failed_pods}</td>
+              <td style="font-size:11px;color:#94a3b8">${j.duration_seconds != null ? fmt.age(j.duration_seconds) : j.active ? badge("In progress","blue") : "—"}</td>
+              <td style="font-size:11px;color:#94a3b8">${fmt.age(j.age_seconds)}</td>
+            </tr>`).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+// ── Services ──────────────────────────────────────────────────────────
+async function renderServices() {
+  const params = state.namespace ? `?namespace=${encodeURIComponent(state.namespace)}` : "";
+  const svcs = await api(`/api/clusters/${state.selected}/services${params}`);
+
+  const typeColor = { ClusterIP: "slate", NodePort: "blue", LoadBalancer: "green", ExternalName: "purple" };
+
+  document.getElementById("content").innerHTML = `
+    <div class="filter-bar">
+      ${nsFilterHTML()}
+      ${searchInput("Search services…", "svcBody")}
+      <span style="margin-left:auto;font-size:12px;color:#94a3b8">${svcs.length} services</span>
+    </div>
+    <div class="table-card" style="overflow-x:auto">
+      <table class="dtable">
+        <thead><tr>
+          <th>Namespace</th><th>Name</th><th>Type</th><th>Cluster IP</th>
+          <th>External IP</th><th>Ports</th><th>Age</th>
+        </tr></thead>
+        <tbody id="svcBody">
+          ${svcs.length === 0 ? emptyState("No services found") : svcs.map(s => {
+            const ext = s.load_balancer_ip || (s.external_ips || []).join(", ") || "—";
+            const ports = (s.ports || []).map(p =>
+              `<span style="font-size:11px;background:#f1f5f9;padding:1px 5px;border-radius:3px;white-space:nowrap">${p.port}${p.node_port ? ":" + p.node_port : ""}/${p.protocol}</span>`
+            ).join(" ");
+            return `
+              <tr>
+                <td><span style="font-family:monospace;font-size:11px;color:#64748b">${esc(s.namespace)}</span></td>
+                <td><span style="font-family:monospace;font-size:12px;font-weight:500;color:#1e293b">${esc(s.name)}</span></td>
+                <td>${badge(s.type, typeColor[s.type] || "slate")}</td>
+                <td style="font-family:monospace;font-size:11px;color:#64748b">${esc(s.cluster_ip || "—")}</td>
+                <td style="font-family:monospace;font-size:11px;color:${ext !== "—" ? "#059669" : "#e2e8f0"}">${esc(ext)}</td>
+                <td>${ports || '<span style="color:#e2e8f0">—</span>'}</td>
+                <td style="font-size:11px;color:#94a3b8">${fmt.age(s.age_seconds)}</td>
+              </tr>`;
+          }).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+// ── Describe panel ────────────────────────────────────────────────────
+const _dc = {
+  kvRow: (k, v) => `<tr><td style="color:#64748b;font-size:12px;padding:5px 12px 5px 0;white-space:nowrap;vertical-align:top;font-weight:500">${k}</td><td style="font-size:12px;color:#1e293b;padding:5px 0;word-break:break-all">${v}</td></tr>`,
+  section: (title, body) => `<div style="margin-bottom:22px"><p style="font-size:10px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:.07em;margin-bottom:10px;padding-bottom:6px;border-bottom:1px solid #f1f5f9">${title}</p>${body}</div>`,
+  events: evs => evs.length ? evs.map(e => `
+    <div style="padding:7px 0;border-bottom:1px solid #f8fafc">
+      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+        ${badge(e.reason, e.type === "Warning" ? "yellow" : "slate")}
+        <span style="font-size:11px;color:#94a3b8">${fmt.age(e.age_seconds)} ago</span>
+        <span style="font-size:10px;color:#cbd5e1">×${e.count}</span>
+      </div>
+      <p style="font-size:12px;color:#475569;margin-top:3px;line-height:1.5">${esc(e.message || "")}</p>
+    </div>`).join("") : `<p style="color:#94a3b8;font-size:12px">No recent events.</p>`,
+};
+
+function openDescribe(type, ...args) {
+  const overlay = document.getElementById("describeOverlay");
+  const panel   = document.getElementById("describePanel");
+  overlay.classList.remove("hidden");
+  panel.style.transform = "translateX(0)";
+  document.getElementById("describeContent").innerHTML =
+    `<div style="display:flex;justify-content:center;padding:60px"><span class="spinner" style="width:20px;height:20px;border-width:3px"></span></div>`;
+
+  let url, title, subtitle;
+  if (type === "pod") {
+    const [ns, name] = args;
+    url = `/api/clusters/${state.selected}/pods/${encodeURIComponent(ns)}/${encodeURIComponent(name)}/describe`;
+    title = name; subtitle = `Pod · ${ns}`;
+  } else if (type === "node") {
+    const [name] = args;
+    url = `/api/clusters/${state.selected}/nodes/${encodeURIComponent(name)}/describe`;
+    title = name; subtitle = "Node";
+  } else if (type === "workload") {
+    const [ns, kind, name] = args;
+    url = `/api/clusters/${state.selected}/workloads/${encodeURIComponent(ns)}/${kind.toLowerCase()}/${encodeURIComponent(name)}/describe`;
+    title = name; subtitle = `${kind} · ${ns}`;
+  }
+
+  document.getElementById("describeTitle").textContent = title;
+  document.getElementById("describeSubtitle").textContent = subtitle;
+
+  api(url).then(d => {
+    const html =
+      type === "pod"      ? _renderPodDescribe(d) :
+      type === "node"     ? _renderNodeDescribe(d) :
+      type === "workload" ? _renderWorkloadDescribe(d) : "";
+    document.getElementById("describeContent").innerHTML = html || `<p style="color:#94a3b8">No data.</p>`;
+  }).catch(e => {
+    document.getElementById("describeContent").innerHTML =
+      `<div style="color:#dc2626;font-size:13px">Error: ${esc(e.message)}</div>`;
+  });
+}
+
+function closeDescribe() {
+  document.getElementById("describeOverlay").classList.add("hidden");
+  document.getElementById("describePanel").style.transform = "translateX(100%)";
+}
+
+function _renderPodDescribe(d) {
+  if (!d || !d.name) return "";
+  const c = _dc;
+
+  const basicTable = `<table style="width:100%">
+    ${c.kvRow("Node", esc(d.node || "—"))}
+    ${c.kvRow("Pod IP", esc(d.pod_ip || "—"))}
+    ${c.kvRow("Host IP", esc(d.host_ip || "—"))}
+    ${c.kvRow("Phase", podPhaseBadge(d.phase, d.phase === "Running"))}
+    ${c.kvRow("QoS class", esc(d.qos_class || "—"))}
+    ${c.kvRow("Service account", esc(d.service_account || "default"))}
+    ${c.kvRow("Age", fmt.age(d.age_seconds))}
+  </table>`;
+
+  const labels = Object.entries(d.labels || {}).map(([k, v]) =>
+    `<span style="font-size:11px;background:#f1f5f9;padding:2px 6px;border-radius:4px;margin:2px;display:inline-block">${esc(k)}=<b>${esc(v)}</b></span>`
+  ).join("") || '<span style="color:#94a3b8;font-size:12px">none</span>';
+
+  const containers = (d.containers || []).map(con => `
+    <div style="border:1px solid #e2e8f0;border-radius:8px;padding:12px 14px;margin-bottom:10px">
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px">
+        <span style="font-family:monospace;font-size:13px;font-weight:600;color:#1e293b">${esc(con.name)}</span>
+        ${con.ready ? badge("Ready","green") : badge("Not Ready","red")}
+        ${con.restart_count > 0 ? restartBadge(con.restart_count) : ""}
+      </div>
+      <div style="font-size:11px;color:#64748b;margin-bottom:8px;word-break:break-all">${esc(con.image)}</div>
+      ${con.resources && (con.resources.requests?.cpu || con.resources.limits?.memory) ? `
+      <table style="width:100%;margin-bottom:8px">
+        ${con.resources.requests?.cpu    ? c.kvRow("CPU request",    esc(con.resources.requests.cpu)) : ""}
+        ${con.resources.limits?.cpu      ? c.kvRow("CPU limit",      esc(con.resources.limits.cpu)) : ""}
+        ${con.resources.requests?.memory ? c.kvRow("Mem request",    esc(con.resources.requests.memory)) : ""}
+        ${con.resources.limits?.memory   ? c.kvRow("Mem limit",      esc(con.resources.limits.memory)) : ""}
+      </table>` : ""}
+      ${con.ports?.length ? `<div style="font-size:11px;color:#94a3b8;margin-bottom:6px">Ports: ${con.ports.map(p => `${p.container_port}/${p.protocol}`).join(", ")}</div>` : ""}
+      ${con.volume_mounts?.length ? `<div style="font-size:11px;color:#94a3b8;margin-bottom:8px">Mounts: ${con.volume_mounts.map(vm => `<code style="background:#f8fafc;padding:1px 4px">${esc(vm.mount_path)}</code>`).join(", ")}</div>` : ""}
+      <div style="display:flex;gap:6px;flex-wrap:wrap">
+        <button onclick="openLogs('${esc(state.selected)}','${esc(d.namespace)}','${esc(d.name)}','${esc(con.name)}')"
+          style="font-size:11px;padding:4px 12px;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:6px;cursor:pointer;color:#475569;font-weight:500">
+          📋 Logs
+        </button>
+        <button onclick="openExec('${esc(state.selected)}','${esc(d.namespace)}','${esc(d.name)}','${esc(con.name)}')"
+          style="font-size:11px;padding:4px 12px;background:#dbeafe;border:1px solid #bfdbfe;border-radius:6px;cursor:pointer;color:#1e40af;font-weight:500">
+          ⚡ Exec
+        </button>
+      </div>
+    </div>`).join("");
+
+  const volumes = (d.volumes || []).map(v => `
+    <div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid #f8fafc">
+      <span style="font-family:monospace;font-size:11px;color:#1e293b;min-width:140px;flex-shrink:0">${esc(v.name)}</span>
+      ${badge(v.type, v.type === "PVC" ? "indigo" : v.type === "Secret" ? "red" : v.type === "ConfigMap" ? "blue" : "slate")}
+      ${v.ref ? `<span style="font-size:11px;color:#64748b">${esc(v.ref)}</span>` : ""}
+    </div>`).join("") || `<p style="color:#94a3b8;font-size:12px">No volumes.</p>`;
+
+  return `
+    ${c.section("Basic Info", basicTable)}
+    ${c.section("Labels", `<div style="line-height:2">${labels}</div>`)}
+    ${c.section("Containers", containers)}
+    ${c.section("Volumes", volumes)}
+    ${c.section("Events", c.events(d.events || []))}
+  `;
+}
+
+function _renderNodeDescribe(d) {
+  if (!d || !d.name) return "";
+  const c = _dc;
+
+  const basicTable = `<table style="width:100%">
+    ${c.kvRow("Roles",    esc((d.roles || []).join(", ") || "worker"))}
+    ${c.kvRow("Internal IP", esc(d.addresses?.InternalIP || "—"))}
+    ${c.kvRow("External IP", esc(d.addresses?.ExternalIP || "—"))}
+    ${c.kvRow("Hostname",    esc(d.addresses?.Hostname   || "—"))}
+    ${c.kvRow("Age",         fmt.age(d.age_seconds))}
+  </table>`;
+
+  const sysTable = `<table style="width:100%">
+    ${c.kvRow("OS Image",   esc(d.system_info?.os_image           || "—"))}
+    ${c.kvRow("Kernel",     esc(d.system_info?.kernel_version     || "—"))}
+    ${c.kvRow("Kubelet",    esc(d.system_info?.kubelet_version    || "—"))}
+    ${c.kvRow("Runtime",    esc(d.system_info?.container_runtime  || "—"))}
+    ${c.kvRow("Arch",       esc(d.system_info?.architecture       || "—"))}
+  </table>`;
+
+  const capTable = `<table style="width:100%">
+    ${c.kvRow("CPU capacity",       fmt.cores(d.capacity?.cpu_cores))}
+    ${c.kvRow("CPU allocatable",    fmt.cores(d.allocatable?.cpu_cores))}
+    ${c.kvRow("Mem capacity",       fmt.bytes(d.capacity?.memory_bytes))}
+    ${c.kvRow("Mem allocatable",    fmt.bytes(d.allocatable?.memory_bytes))}
+    ${c.kvRow("Max pods",           d.capacity?.pods ?? "—")}
+  </table>`;
+
+  const conditions = Object.entries(d.conditions || {}).map(([type, cv]) => {
+    const ok = cv.status === "True";
+    const col = type === "Ready" ? (ok ? "green" : "red") : (ok ? "yellow" : "slate");
+    return `<div style="display:flex;align-items:flex-start;gap:8px;padding:5px 0;border-bottom:1px solid #f8fafc">
+      ${badge(type, col)}
+      <span style="font-size:11px;color:#64748b">${esc(cv.reason || "")}${cv.message ? " — " + esc(cv.message) : ""}</span>
+    </div>`;
+  }).join("") || `<p style="color:#94a3b8;font-size:12px">No conditions.</p>`;
+
+  const taints = (d.taints || []).map(t =>
+    `<div style="font-size:12px;padding:3px 0">${badge(t.effect,"yellow")} <code style="font-size:11px;color:#475569">${esc(t.key)}${t.value ? "=" + t.value : ""}</code></div>`
+  ).join("") || `<p style="color:#94a3b8;font-size:12px">No taints.</p>`;
+
+  return `
+    ${c.section("Basic Info", basicTable)}
+    ${c.section("System Info", sysTable)}
+    ${c.section("Capacity & Allocatable", capTable)}
+    ${c.section("Conditions", conditions)}
+    ${c.section("Taints", taints)}
+    ${c.section("Events", c.events(d.events || []))}
+  `;
+}
+
+function _renderWorkloadDescribe(d) {
+  if (!d || !d.name) return "";
+  const c = _dc;
+
+  const notReady = d.status.ready < d.status.replicas;
+  const basicTable = `<table style="width:100%">
+    ${c.kvRow("Kind",            kindBadge(d.kind))}
+    ${c.kvRow("Namespace",       esc(d.namespace))}
+    ${c.kvRow("Strategy",        esc(d.strategy || "—"))}
+    ${c.kvRow("Service account", esc(d.service_account || "default"))}
+    ${c.kvRow("Age",             fmt.age(d.age_seconds))}
+    ${c.kvRow("Replicas",        `<span style="font-weight:600;color:${notReady ? "#dc2626" : "#059669"}">${d.status.ready} / ${d.status.replicas} ready</span>`)}
+  </table>`;
+
+  const selector = Object.entries(d.selector || {}).map(([k, v]) =>
+    `<span style="font-size:11px;background:#f1f5f9;padding:2px 6px;border-radius:4px;margin:2px;display:inline-block">${esc(k)}=<b>${esc(v)}</b></span>`
+  ).join("") || '<span style="color:#94a3b8;font-size:12px">none</span>';
+
+  const containers = (d.containers || []).map(con => `
+    <div style="border:1px solid #e2e8f0;border-radius:8px;padding:12px 14px;margin-bottom:10px">
+      <div style="font-family:monospace;font-size:13px;font-weight:600;color:#1e293b;margin-bottom:4px">${esc(con.name)}</div>
+      <div style="font-size:11px;color:#64748b;margin-bottom:8px;word-break:break-all">${esc(con.image)}</div>
+      ${Object.keys(con.resources?.requests || {}).length || Object.keys(con.resources?.limits || {}).length ? `
+      <table style="width:100%">
+        ${con.resources?.requests?.cpu    ? c.kvRow("CPU request",  esc(con.resources.requests.cpu)) : ""}
+        ${con.resources?.limits?.cpu      ? c.kvRow("CPU limit",    esc(con.resources.limits.cpu)) : ""}
+        ${con.resources?.requests?.memory ? c.kvRow("Mem request",  esc(con.resources.requests.memory)) : ""}
+        ${con.resources?.limits?.memory   ? c.kvRow("Mem limit",    esc(con.resources.limits.memory)) : ""}
+      </table>` : ""}
+      ${con.ports?.length ? `<div style="font-size:11px;color:#94a3b8;margin-top:4px">Ports: ${con.ports.map(p => `${p.container_port}/${p.protocol}`).join(", ")}</div>` : ""}
+    </div>`).join("");
+
+  const conditions = Object.entries(d.conditions || {}).map(([type, cv]) => `
+    <div style="display:flex;align-items:flex-start;gap:8px;padding:5px 0;border-bottom:1px solid #f8fafc">
+      ${badge(type, cv.status === "True" ? "green" : "red")}
+      <span style="font-size:11px;color:#64748b">${esc(cv.reason || "")}${cv.message ? " — " + esc(cv.message) : ""}</span>
+    </div>`).join("") || `<p style="color:#94a3b8;font-size:12px">No conditions.</p>`;
+
+  return `
+    ${c.section("Basic Info", basicTable)}
+    ${c.section("Pod Selector", `<div style="line-height:2">${selector}</div>`)}
+    ${c.section("Containers", containers)}
+    ${c.section("Conditions", conditions)}
+    ${c.section("Events", c.events(d.events || []))}
+  `;
+}
+
+// ── Logs modal ────────────────────────────────────────────────────────
+let _logsCtx = null;
+
+async function openLogs(cluster, ns, pod, container) {
+  _logsCtx = { cluster, ns, pod, container };
+  document.getElementById("logsModal").classList.remove("hidden");
+  document.getElementById("logsTitle").textContent = `${ns}/${pod}${container ? " · " + container : ""}`;
+  document.getElementById("logsPrevious").checked = false;
+  await _fetchLogs();
+}
+
+async function refreshLogs() { await _fetchLogs(); }
+
+async function _fetchLogs() {
+  if (!_logsCtx) return;
+  const { cluster, ns, pod, container } = _logsCtx;
+  document.getElementById("logsContent").textContent = "Loading…";
+  try {
+    const p = new URLSearchParams({ tail: "300" });
+    if (container) p.set("container", container);
+    if (document.getElementById("logsPrevious")?.checked) p.set("previous", "true");
+    const text = await fetch(`/api/clusters/${encodeURIComponent(cluster)}/pods/${encodeURIComponent(ns)}/${encodeURIComponent(pod)}/logs?${p}`).then(r => r.text());
+    document.getElementById("logsContent").textContent = text || "(no output)";
+    const scroll = document.getElementById("logsScroll");
+    scroll.scrollTop = scroll.scrollHeight;
+  } catch (e) {
+    document.getElementById("logsContent").textContent = "Error: " + e.message;
+  }
+}
+
+function closeLogs() {
+  _logsCtx = null;
+  document.getElementById("logsModal").classList.add("hidden");
+}
+
+// ── Exec terminal ─────────────────────────────────────────────────────
+let _execWs   = null;
+let _execTerm = null;
+let _execFit  = null;
+
+function openExec(cluster, ns, pod, container) {
+  document.getElementById("execModal").classList.remove("hidden");
+  document.getElementById("execTitle").textContent = `${ns}/${pod}${container ? " · " + container : ""}`;
+
+  if (_execTerm) { _execTerm.dispose(); _execTerm = null; }
+  if (_execWs)   { _execWs.close();   _execWs   = null; }
+
+  const el = document.getElementById("execTerminal");
+  el.innerHTML = "";
+
+  _execTerm = new Terminal({
+    cursorBlink: true,
+    fontSize: 13,
+    fontFamily: "ui-monospace,'Cascadia Code','Fira Code',Menlo,monospace",
+    theme: { background: "#0f172a", foreground: "#e2e8f0", cursor: "#60a5fa",
+             selectionBackground: "rgba(96,165,250,.3)" },
+    scrollback: 5000,
+  });
+  _execFit = new FitAddon.FitAddon();
+  _execTerm.loadAddon(_execFit);
+  _execTerm.open(el);
+  _execFit.fit();
+
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  const q = container ? `?container=${encodeURIComponent(container)}` : "";
+  const url = `${proto}//${location.host}/ws/clusters/${encodeURIComponent(cluster)}/pods/${encodeURIComponent(ns)}/${encodeURIComponent(pod)}/exec${q}`;
+
+  _execWs = new WebSocket(url);
+  _execWs.onopen = () => { _sendResize(); };
+  _execWs.onmessage = e => _execTerm.write(e.data);
+  _execWs.onclose = () => _execTerm?.writeln("\r\n\x1b[33mConnection closed.\x1b[0m");
+  _execWs.onerror = () => _execTerm?.writeln("\r\n\x1b[31mWebSocket error.\x1b[0m");
+
+  _execTerm.onData(d => {
+    if (_execWs?.readyState === WebSocket.OPEN) _execWs.send(d);
+  });
+
+  _execTerm.onResize(({ cols, rows }) => {
+    if (_execWs?.readyState === WebSocket.OPEN)
+      _execWs.send(JSON.stringify({ type: "resize", cols, rows }));
+  });
+
+  window.addEventListener("resize", _sendResize);
+}
+
+function _sendResize() {
+  if (!_execFit || !_execTerm) return;
+  _execFit.fit();
+}
+
+function closeExec() {
+  window.removeEventListener("resize", _sendResize);
+  if (_execWs)   { _execWs.close();   _execWs   = null; }
+  if (_execTerm) { _execTerm.dispose(); _execTerm = null; }
+  document.getElementById("execModal").classList.add("hidden");
 }
 
 // ── Refresh wiring ────────────────────────────────────────────────────
