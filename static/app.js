@@ -485,7 +485,7 @@ async function renderPods() {
               <td><span style="font-family:monospace;font-size:11px;color:#64748b">${esc(p.namespace)}</span></td>
               <td>
                 <button onclick="openDescribe('pod','${esc(p.namespace)}','${esc(p.name)}')"
-                  style="font-family:monospace;font-size:12px;font-weight:600;color:#2563eb;background:none;border:none;cursor:pointer;padding:0;text-align:left;text-decoration:underline;text-underline-offset:2px">
+                  style="font-family:monospace;font-size:12px;font-weight:600;color:#1e293b;background:none;border:none;cursor:pointer;padding:0;text-align:left;text-decoration:none">
                   ${esc(p.name)}
                 </button>
               </td>
@@ -567,7 +567,7 @@ async function renderNodes() {
               <tr class="${cls}">
                 <td>
                   <button onclick="openDescribe('node','${esc(n.name)}')"
-                    style="font-family:monospace;font-size:12px;font-weight:600;color:#2563eb;background:none;border:none;cursor:pointer;padding:0;text-decoration:underline;text-underline-offset:2px">
+                    style="font-family:monospace;font-size:12px;font-weight:600;color:#1e293b;background:none;border:none;cursor:pointer;padding:0;text-decoration:none">
                     ${esc(n.name)}
                   </button>
                 </td>
@@ -618,7 +618,7 @@ async function renderWorkloads() {
                 <td><span style="font-family:monospace;font-size:11px;color:#64748b">${esc(w.namespace)}</span></td>
                 <td>
                   <button onclick="openDescribe('workload','${esc(w.namespace)}','${esc(w.kind)}','${esc(w.name)}')"
-                    style="font-family:monospace;font-size:12px;font-weight:600;color:#2563eb;background:none;border:none;cursor:pointer;padding:0;text-decoration:underline;text-underline-offset:2px">
+                    style="font-family:monospace;font-size:12px;font-weight:600;color:#1e293b;background:none;border:none;cursor:pointer;padding:0;text-decoration:none">
                     ${esc(w.name)}
                   </button>
                 </td>
