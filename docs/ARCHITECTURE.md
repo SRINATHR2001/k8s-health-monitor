@@ -217,7 +217,7 @@ sequenceDiagram
     participant K as kube-apiserver (exec subresource)
 
     B->>WS: WS connect /ws/clusters/{name}/pods/{ns}/{pod}/exec
-    WS->>WS: accept(); look up ClusterClient
+    WS->>WS: accept() and look up ClusterClient
     alt cluster not connected
         WS-->>B: close(1008)
     else connected
